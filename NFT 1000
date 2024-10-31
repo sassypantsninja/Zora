@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract LimitedEditionNFTWithAuctions is ERC721Enumerable, Ownable {
+    uint256 public constant MAX_SUPPLY = 1000;
+    uint256 public constant MINT_PRICE = 0.001 ether;
+    uint256 public totalMinted = 0;
+
+    struct Auction {
+        address payable seller;
+        uint256 reservePrice;
+        uint256 endTime;
+        address highestBidder;
+        uint256 highestBid;
+        bool active;
+    }
+
+    mapping(uint256 => Auction) public auctions;
+
+    constructor() ERC721("LimitedEditionNFT", "LENFT") {}
+
+    // Mint function with limited supply and mint price
+    function mintNFT() public payable {
+        require(totalMinted < MAX_SUPPLY, "Max supply reached");
+        require(msg.value == MINT_PRICE, "Incorrect mint price");
+
+        // Increment total minted count and mint NFT
+        uint256 tokenId = totalMinted + 1;
+        _safeMint(msg.sender, tokenId);
+        totalMinted++;
+    }
+
+    // Withdraw collected ETH by contract owner
+    function withdraw() external onlyOwner {
+        uint256 balance = address(this).balance;
+        payable(owner()).transfer(balance);
+    }
+
+    // Create an auction for an NFT
+    function createAuction(uint256 tokenId, uint256 reservePrice, uint256 duration) external {
+        require(ownerOf(tokenId) == msg.sender, "You must own the token to auction it");
+        require(!auctions[tokenId].active, "Auction already exists");
+
+        // Initialize the auction
+        auctions[tokenId] = Auction({
+            seller: payable(msg.sender),
+            reservePrice: reservePrice,
+            endTime: block.timestamp + duration,
+            highestBidder: address(0),
+            highestBid: 0,
+            active: true
+        });
+
+        // Transfer the NFT to the contract for escrow
+        _transfer(msg.sender, address(this), tokenId);
+    }
+
+    // Place a bid on an active auction
+    function placeBid(uint256 tokenId) external payable {
+        Auction storage auction = auctions[tokenId];
+        require(auction.active, "Auction is not active");
+        require(block.timestamp < auction.endTime, "Auction has ended");
+        require(msg.value > auction.highestBid, "Bid must be higher than current bid");
+
+        // Refund the previous highest bidder
+        if (auction.highestBidder != address(0)) {
+            payable(auction.highestBidder).transfer(auction.highestBid);
+        }
+
+        // Update the highest bid
+        auction.highestBidder = msg.sender;
+        auction.highestBid = msg.value;
+    }
+
+    // Complete the auction and transfer the NFT to the highest bidder
+    function completeAuction(uint256 tokenId) external {
+        Auction storage auction = auctions[tokenId];
+        require(auction.active, "Auction is not active");
+        require(block.timestamp >= auction.endTime, "Auction is still ongoing");
+
+        // Conclude the auction and transfer funds
+        auction.active = false;
+
+        if (auction.highestBid >= auction.reservePrice) {
+            auction.seller.transfer(auction.highestBid);
+            _transfer(address(this), auction.highestBidder, tokenId);
+        } else {
+            // Auction did not meet the reserve price, return NFT to seller
+            _transfer(address(this), auction.seller, tokenId);
+            if (auction.highestBidder != address(0)) {
+                payable(auction.highestBidder).transfer(auction.highestBid);
+            }
+        }
+    }
+}
